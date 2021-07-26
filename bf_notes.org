@@ -1,5 +1,7 @@
 #+TITLE: BF Notes
 
+* Grammar Notation
+
 A grammer consists of a series of production rules, written one per line.
 On the right of each rule, we have a pattern for that element. This side of the rule is like a regular expression.
 If a pattern has multiple possibilities for a certain position, they're separated by a vertical bar |.
@@ -38,3 +40,126 @@ digi      : "0" | "1" | "2" | "3" | "4"
           | "5" | "6" | "7" | "8" | "9"
 func      : "+" | "*"
 #+END_SRC
+
+* The Parser
+
+This is how BF works:
+
+:   >   | increase the pointer position by one
+:   <   | decrease the pointer position by one
+:   +   | increase the value of the current byte by one
+:   -   | decrease the value of the current byte by one
+:   .   | write the current byte to stdout
+:   ,   | read a byte from stdin and store it in the current byte (overwriting the existing value)
+: [...] | looping construct that can contain operators or other loops
+
+We can build our grammar like so:
+
+#+BEGIN_PROSE
+bf-program : (bf-op | bf-loop)*
+bf-op      : ">" | "<" | "+" | "-" | "." | ","
+bf-loop    : "[" bf-program "]"
+#+END_PROSE
+
+** Converting a Grammar to a Parser
+
+Now that we've made our BF grammar, we need to convert it to an actual bf parser
+
+#+BEGIN_SRC racket :tangle parser.rkt
+#lang brag
+bf-program : (bf-op | bf-loop)*
+bf-op      : ">" | "<" | "+" | "-" | "." | ","
+bf-loop    : "[" bf-program "]"
+#+END_SRC
+
+When we import this module into our bf reader, we'll get a function called parse that implements this grammar and another called parse-to-datum that will let us check the generated parse tree.
+
+#+BEGIN_SRC racket :tangle parser-tester.rkt
+#lang br
+(require "parser.rkt")
+(parse-to-datum "++++-+++-++-++[>++++-+++-++-++<-]>.")
+#+END_SRC
+
+* The Tokenizer and the Reader
+
+The parser takes as input a sequence of tokens. A token is the smallest meaningful chunk of a string of source code. A source string is converted to tokens with a function called a tokenizer that sits between the source string and the parser.
+
+If we don't use a tokenizer, then every character that appears in our source code counts as a token, and thus also has to appear in our grammar.
+For that reason, a tokenizer is often convenient, because it reduces the number of distinct tokens we have to handle in our grammar.
+
+** Writing a Reader with a Tokenizer
+
+#+BEGIN_SRC racket :tangle reader.rkt
+#lang br/quicklang
+(require "parser.rkt")
+
+(define (read-syntax path port)
+  (define parse-tree (parse path (make-tokenizer port)))
+  (define module-datum `(module bf-mod "expander.rkt" ,parse-tree))
+  (datum->syntax #f module-datum))
+(provide read-syntax)
+#+END_SRC
+
+Here's the plan:
+- This read-syntax will take as input a source path and input port
+- Instead of manually reading strings of code from port, we pass the port to make-tokenizer, which returns a function that reads characters from the port and generates tokens
+- In turn, we make these tokens available to parse, which uses our grammar to produce our parse-tree
+- As we did in stacker, we create a module-datum representing the code for a module, and put our parse-tree inside it
+- Finally, we use datum->syntax to package this code as a syntax object
+
+Next we add our new make-tokenizer function. We're passing make-tokenizer the input port that points to the source string.
+Rather than returning one big pile of tokens, make-tokenizer creates & returns a function called next-token that the parser
+will call repeatedly to retrieve new tokens.
+
+#+BEGIN_SRC racket :tangle reader.rkt
+;; (define (make-tokenizer port)
+;;   (define (next-token)
+;;     ...)
+;;   next-token)
+#+END_SRC
+
+Finally the tokenizer rules. The tokenizer relies on a helper function called a lexer. Each branch of the lexer represents a rule.
+On the left side of the branch is a pattern that works like a regular expression. On the right side is a token-creating expression.
+Each time next-token is called, bf-lexer will read as many characters from the port as it can while still matching a rule pattern.
+The right side of the rule will convert the matched characters into a token, and this token will be returned as a result.
+
+#+BEGIN_SRC racket :tangle reader.rkt
+(require brag/support)
+(define (make-tokenizer port)
+  (define (next-token)
+    (define bf-lexer
+      (lexer
+       [(char-set "><-.,+[]") lexeme]
+       [any-char (next-token)]))
+    (bf-lexer port))
+  next-token)
+#+END_SRC
+
+The first rule uses the lexer helper char-set to match one of our eight special BF characters. We pass these through directly with the special lexer variable lexeme.
+
+The other rule uses the lexer helper any-char, which matches any other character. We can think of it as an else branch.
+In BF these characters should be ignored.
+
+** Testing the Reader
+
+#+BEGIN_SRC racket :tangle atsign.rkt
+#lang reader "reader.rkt"
+Greatest language ever!
+++++-+++-++-++[>++++-+++-++-++<-]>.
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle expander.rkt
+#lang br/quicklang
+
+(define-macro (bf-module-begin PARSE-TREE)
+  #'(#%module-begin
+     PARSE-TREE))
+
+(provide (rename-out [bf-module-begin #%module-begin]))
+#+END_SRC
+
+* An Imperative Expander
+
+We'll first write the expander in imperative style, and then upgrade it to a functional style.
+
+** Starting the Expander
