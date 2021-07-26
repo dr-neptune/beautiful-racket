@@ -1,0 +1,40 @@
+#+TITLE: BF Notes
+
+A grammer consists of a series of production rules, written one per line.
+On the right of each rule, we have a pattern for that element. This side of the rule is like a regular expression.
+If a pattern has multiple possibilities for a certain position, they're separated by a vertical bar |.
+
+** Groups and Multiples in Patterns
+
+Here is a grammar for stacker:
+
+#+BEGIN_SRC txt
+stacker-program : "\n"* instruction ("\n"+ instruction)*
+instruction     : integer | func
+integer         : ["-"] digit+
+digit           : "0" | "1" | "2" | "3" | "4"
+                | "5" | "6" | "7" | "8" | "9"
+func            : "+" | "*"
+#+END_SRC
+
+** Recursive Grammars
+
+Because the rules in a grammar can refer to each other recursively, a lot of complexity can be expressed in a small set of rules.
+
+We will invent M-expressions, which we'll define as the subset of S-expressions that only contain addition and multiplication of integers.
+M-expressions can be nested to any depth
+
+#+BEGIN_SRC txt
+(+ 1 (* 2 (+ 3 4) 5) 6)
+#+END_SRC
+
+The grammar for M-expressions might look like this:
+
+#+BEGIN_SRC txt
+m-expr    : m-list | integer
+m-list    : "(" func ( " " + m-expr )* ")"
+integer   : ["-"] digit+
+digi      : "0" | "1" | "2" | "3" | "4"
+          | "5" | "6" | "7" | "8" | "9"
+func      : "+" | "*"
+#+END_SRC
