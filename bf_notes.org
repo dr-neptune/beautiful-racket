@@ -148,7 +148,7 @@ Greatest language ever!
 ++++-+++-++-++[>++++-+++-++-++<-]>.
 #+END_SRC
 
-#+BEGIN_SRC racket
+#+BEGIN_SRC racket :tangle expander.rkt
 #lang br/quicklang
 
 (define-macro (bf-module-begin PARSE-TREE)
@@ -196,7 +196,7 @@ So we define our macro using this syntax pattern:
 3. The ellipsis, which is similar to a * quantifier in regular expressions. In this case we match 0 or more argumentsx
 
 
-#+BEGIN_SRC racket
+#+BEGIN_SRC racket :tangle expander.rkt
 (define-macro (bf-program OP-OR-LOOP-ARG ...)
   #'(void OP-OR-LOOP-ARG ...))
 
@@ -212,7 +212,7 @@ bf-loop    : "[" (bf-op | bf-loop)* "]"
 
 Now we can put in the macro
 
-#+BEGIN_SRC racket
+#+BEGIN_SRC racket :tangle expander.rkt
 (define-macro (bf-loop "[" OP-OR-LOOP-ARG ... "]")
   #'(until (zero? (current-byte))                   ; current-byte will be added in a minute
            OP-OR-LOOP-ARG ...))
@@ -228,7 +228,7 @@ bf-op      : ">" | "<" | "+" | "-" | "." | ","
 As we did for bf-program and bf-loop, we'll convert this into a syntax rule for the bf-op macro.
 This time we'll use a variant of define-macro called define-macro-cases that will let us set up our macro with multiple cases.
 
-#+BEGIN_SRC racket
+#+BEGIN_SRC racket :tangle expander.rkt
 ; we haven't made the RHS functions yet, but we will
 (define-macro-cases bf-op
   [(bf-op ">") #'(gt)]
@@ -247,7 +247,7 @@ The array and the pointer are state values: they keep a record of what's happene
 
 We will be using a vector for the byte array. Unlike our macros, we don't need to provide the vector variables since they are just for internal use.
 
-#+BEGIN_SRC racket
+#+BEGIN_SRC racket :tangle expander.rkt
 (define arr (make-vector 30000 0))
 (define ptr 0)
 
@@ -278,7 +278,7 @@ This time, consistent with the functional programming idiom, we'll model our bf 
 
 We will strip our module back to the bf-module-begin macro
 
-#+BEGIN_SRC racket :tangle expander.rkt
+#+BEGIN_SRC racket
 #lang br/quicklang
 
 (define-macro (bf-module-begin PARSE-TREE)
@@ -291,7 +291,7 @@ We will strip our module back to the bf-module-begin macro
 
 Our goal is to allow our 2 bf state values -- a memory array of 30k bytes and a pointer into that array -- to be passed from 1 bf operation to the next.
 
-#+BEGIN_SRC racket :tangle expander.rkt
+#+BEGIN_SRC racket
 (define (fold-funcs apl bf-funcs)  ; apl is a list of a bf array and a pointer, i.e. the return value of a bf-func, and a list of bf-funcs
   (for/fold ([current-apl apl])
             ([bf-func (in-list bf-funcs)])
@@ -303,7 +303,7 @@ Our goal is to allow our 2 bf state values -- a memory array of 30k bytes and a 
 With fold-funcs in hand, we can rewrite the macros from our imperative expander in a functional style.
 Nothing has changed in our parse-tree, so our macros will be defined using the same syntax patterns we figured out before.
 
-#+BEGIN_SRC racket :tangle expander.rkt
+#+BEGIN_SRC racket
 (define-macro (bf-program OP-OR-LOOP-ARG ...)
   #'(begin
       (define first-apl (list (make-vector 30000 0) 0))
@@ -317,7 +317,7 @@ Next we have bf-loop.
    we established for every bf-func -- to input arguments (an array and a pointer) and one return value (a list of a new array and pointer)
 2. A bf-loop is basically a miniature bf-program that runs repeatedly until a certain condition is met, so we can delegate heavy lifting to fold-funcs.
 
-#+BEGIN_SRC racket :tangle expander.rkt
+#+BEGIN_SRC racket
 (define-macro (bf-loop "[" OP-OR-LOOP-ARG ... "]")
   #'(lambda (arr ptr)
       (for/fold ([current-apl (list arr ptr)])
@@ -330,7 +330,7 @@ Next we have bf-loop.
 
 Our 3rd macro is bf-op:
 
-#+BEGIN_SRC racket :tangle expander.rkt
+#+BEGIN_SRC racket
 (define-macro-cases bf-op
   [(bf-op ">") #'gt]
   [(bf-op "<") #'lt]
@@ -345,7 +345,7 @@ This looks like our previous bf-op macro, but rather than returning a self-conta
 
 ** (Re)implementing the BF Array
 
-#+BEGIN_SRC racket :tangle expander.rkt
+#+BEGIN_SRC racket
 (define (current-byte arr ptr) (vector-ref arr ptr))
 
 ; instead of direct mutation, we return a copy

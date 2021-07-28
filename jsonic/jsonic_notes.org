@@ -1,0 +1,79 @@
+#+TITLE: Extend a Data Format: jsonic
+
+A JSON contains one of 6 values:
+1. a null
+2. a Boolean
+3. a number
+4. a string
+5. an array
+6. an object
+
+We wish to bring automation features into JSON. This hybrid will be a domain specific language based on JSON.
+
+* Specification
+
+** Ground Rules
+
+1. Every jsonic program produces valid JSON.
+2. Every valid JSON file is a valid jsonic program.
+3. Racket expressions can be embedded anywhere within a jsonic program that a JSON value would appear
+4. If the characters // appear in a line, the rest of the line will be commented out
+
+#+BEGIN_SRC racket :tangle jsonic-demo-json.rkt
+#lang jsonic-demo
+[
+ null,
+ 42,
+ true,
+ ["array", "of", "strings"],
+ {
+  "key-1": null,
+  "key-2": false,
+  "key-3": {"subkey": 21}
+  }
+ ]
+#+END_SRC
+
+
+#+BEGIN_SRC racket :tangle jsonic-demo-racket.rkt
+#lang jsonic-demo
+// a line comment
+[
+  @$ 'null $@,
+  @$ (* 6 7) $@,
+  @$ (= 2 (+ 1 1)) $@,
+  @$ (list "array" "of" "strings") $@,
+  @$ (hash 'key-1 'null
+           'key-2 (even? 3)
+           'key-3 (hash 'subkey 21)) $@
+]
+#+END_SRC
+
+** Ready to Roll
+
+Our language will have two main parts:
+1. A reader (comprising a tokenizer and parser)
+2. An expander
+
+* Setup
+
+#+BEGIN_SRC bash
+cd path/to/jsonic
+raco pkg install
+#+END_SRC
+
+* The Reader
+
+** Booting the Reader
+
+When we invoke #lang jsonic, Racket will look for a "main.rkt" module within our jsonic directory.
+Within that module, it will expect to find a reader submodule that provides our read-syntax function.
+
+#+BEGIN_SRC racket :tangle main.rkt
+#lang br/quicklang
+(module reader br
+  (require "reader.rkt")
+  (provide read-syntax))
+#+END_SRC
+
+** The Reader
