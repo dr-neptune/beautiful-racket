@@ -37,9 +37,8 @@
 (define (current-byte arr ptr) (vector-ref arr ptr))
 
 (define (set-current-byte arr ptr val)
-  (define new-arr (vector-copy arr))
-  (vector-set! new-arr ptr val)
-  new-arr)
+  (vector-set! arr ptr val)
+  arr)
 
 (define (gt arr ptr) (list arr (add1 ptr)))
 (define (lt arr ptr) (list arr (sub1 ptr)))
