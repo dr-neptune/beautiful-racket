@@ -90,7 +90,7 @@ By convention, Racket expects the name of the main reader function to be read-sy
 
 (define (read-syntax path port)
   (define parse-tree (parse path (make-tokenizer port)))
-  (define module-datum `(module jsonic-module expander ,parse-tree))
+  (define module-datum `(module jsonic-module jsonic/expander ,parse-tree))
   (datum->syntax #f module-datum))
 (provide read-syntax)
 #+END_SRC
@@ -180,4 +180,145 @@ GOGOGO
 * The Expander
 
 The expander determines how the code produced by the reader corresponds to real Racket expressions, which are then evaluated to produce a result.
-It works by adding bindings to identifiers in the code.
+It works by adding bindings to identifiers in the code. The main job of the expander is to bind the identifiers in a parse tree, even though no define expressions
+appear in the parse tree itself. This is why the reader delivers code without bindings, so the expander can start with a blank slate. The expander does this
+job by exporting a binding (using provide) for each identifier in the parse tree.
+
+** Designing the Expander
+
+Racket starts the expander for a language by invoking a macro called #%module-begin.
+
+We also just saw how the parse tree produced by the jsonic parser follows the production rules of the grammar:
+
+#+BEGIN_SRC racket
+'(jsonic-program
+  (jsonic-char "\"")
+  (jsonic-char "f")
+  (jsonic-char "o")
+  (jsonic-char "o")
+  (jsonic-char "\"")
+  (jsonic-char "\n")
+  (jsonic-sexp " 42 "))
+#+END_SRC
+
+In turn, we can use these production rules to organize the rest of our expander.
+
+1. Each production rule in the grammar will have a corresponding macro or function in the expander
+2. The name (on the left side) of each rule is the name of the corresponding macro or function
+3. The pattern (on the right side) of each rule describes the possible input to that corresponding macro or function
+
+We should have 3 transformers:
+- jsonic-program, that accepts any # of arguments
+- jsonic-char that accepts 1 argument, which is the string value from a CHAR-TOK token
+- jsonic-sexp that accepts 1 argument, which is the string value from a SEXP-TOK token
+
+** Starting the Expander
+
+#+BEGIN_SRC racket :tangle expander.rkt
+#lang br/quicklang
+(require json)
+
+(define-macro (jsonic-mb PARSE-TREE)
+  #'(#%module-begin
+     ; validate our new string as valid JSON, and return the result
+     (define result-string PARSE-TREE)
+     (define validated-jsexpr (string->jsexpr result-string))
+     (display result-string)))
+(provide (rename-out [jsonic-mb #%module-begin]))
+#+END_SRC
+
+** Expanding the Parse Tree
+
+Now we'll add the macros that correspond to the production rules in our jsonic grammar
+
+#+BEGIN_SRC racket :tangle expander.rkt
+(define-macro (jsonic-char CHAR-TOK-VALUE)
+  #'CHAR-TOK-VALUE)
+(provide jsonic-char)
+
+(define-macro (jsonic-program SEXP-OR-JSON-STR ...)
+  #'(string-trim (string-append SEXP-OR-JSON-STR ...)))
+(provide jsonic-program)
+
+(define-macro (jsonic-sexp SEXP-STR)
+  (with-pattern ([SEXP-DATUM (format-datum '~a #'SEXP-STR)])
+    #'(jsexpr->string SEXP-DATUM)))
+(provide jsonic-sexp)
+#+END_SRC
+
+* Testing the Language
+
+#+BEGIN_SRC racket :tangle jsonic-lang-test.rkt
+#lang jsonic
+
+; test passing valid json returns the same json
+[
+ null,
+ 42,
+ true,
+ ["array", "of", "strings"],
+ {
+  "key-1": null,
+  "key-2": false,
+  "key-3": {"subkey": 21}
+ }
+ ]
+
+; test invalid json fails (3/5 not allowed)
+[
+ null,
+ 3/5,
+ true,
+ ["array", "of", "strings"],
+ {
+  "key-1": null,
+  "key-2": false,
+  "key-3": {"subkey": 21}
+ }
+ ]
+
+; test replacing json with racket sexprs
+// a line comment
+[
+ @$ 'null $@,
+ @$ (* 6 7) $@,
+ @$ (= 2 (+ 1 1)) $@,
+ @$ (list "array" "of" "strings") $@,
+ @$ (hash 'key-1 'null
+          'key-2 (even? 3)
+          'key-3 (hash 'subkey 21)) $@
+
+]
+
+; test racket sexprs fail when translating to invalid json
+// a line comment
+[
+ @$ 'null $@,
+ @$ (/ 3 5) $@,
+ @$ (= 2 (+ 1 1)) $@,
+ @$ (list "array" "of" "strings") $@,
+ @$ (hash 'key-1 'null
+          'key-2 (even? 3)
+          'key-3 (hash 'subkey 21)) $@
+
+]
+#+END_SRC
+
+* Contracts
+
+A contract wraps around a function and ensures its input arguments and return value meet requirements that we specify. If the function tries to accept arguments or return a value that doesn't meet these requirements, the contract raises an error.
+
+#+BEGIN_SRC racket :tangle contract-test.rkt
+#lang racket
+(module our-submod br
+  (require racket/contract)
+  (define (our-div num denom)
+    (/ num denom))
+  ; contract-out lets us attach a contract to an exported function
+  (provide (contract-out
+            ; (number? (not/c zero?) . -> . number?) means input must be a number not zero and output must be a number
+            [out-div (number? (not/c zero?) . -> . number?)])))
+
+(require (submod "." our-submod))
+(our-div 42 0)
+#+END_SRC
