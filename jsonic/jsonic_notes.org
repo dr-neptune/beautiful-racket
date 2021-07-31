@@ -84,7 +84,7 @@ The reader converts the source code of our language from a string of characters 
 
 By convention, Racket expects the name of the main reader function to be read-syntax. This read-syntax function must return one value: code for a module expression, packaged as a syntax object. This syntax object must have no bindings. In bf, we made a read-syntax function by relying on a tokenizer and parser to do the heavy lifting.
 
-#+BEGIN_SRC racket :tangle reader.rkt
+#+BEGIN_SRC racket
 #lang br/quicklang
 (require "tokenizer.rkt" "parser.rkt")
 
@@ -97,7 +97,7 @@ By convention, Racket expects the name of the main reader function to be read-sy
 
 * The Tokenizer
 
-#+BEGIN_SRC racket :tangle tokenizer.rkt
+#+BEGIN_SRC racket
 #lang br/quicklang
 (require brag/support)
 
@@ -320,5 +320,172 @@ A contract wraps around a function and ensures its input arguments and return va
             [out-div (number? (not/c zero?) . -> . number?)])))
 
 (require (submod "." our-submod))
-(our-div 42 0)
+(our-div 42 6)
 #+END_SRC
+
+** Adding contracts to our language
+
+#+BEGIN_SRC racket :tangle reader.rkt
+#lang br/quicklang
+(require "tokenizer.rkt" "parser.rkt" racket/contract)
+
+; takes any for path and a port for port and returns syntax
+(define (read-syntax path port)
+  (define parse-tree (parse path (make-tokenizer port)))
+  (define module-datum `(module jsonic-module jsonic/expander ,parse-tree))
+  (datum->syntax #f module-datum))
+
+(provide (contract-out
+          [read-syntax (any/c input-port? . -> . syntax?)]))
+#+END_SRC
+
+Next we can add a contract to make-tokenizer:
+
+#+BEGIN_SRC racket
+#lang br/quicklang
+(require brag/support racket/contract)
+
+(define (jsonic-token? x)
+  (or (eof-object? x)
+      (token-struct? x)))
+
+; make-tokenizer takes an input-port
+(define (make-tokenizer port)
+  ; next-token takes nothing and returns either EOF or a token-structure
+  (define (next-token)
+    (define jsonic-lexer
+      (lexer
+       ; add rules
+       [(from/to "//" "\n") (next-token)]  ; handles line comments. ignore everything from // to the new line. once we have the match, ignore it by calling next-token
+       [(from/to "@$" "$@") (token 'SEXP-TOK (trim-ends "@$" lexeme "$@"))]  ; takes in sexpression tokens
+       [any-char (token 'CHAR-TOK lexeme)]  ; handles tokens not processed by the above
+       ))
+    (jsonic-lexer port))
+  next-token)
+
+(provide (contract-out
+          [make-tokenizer (input-port? . -> . (-> jsonic-token?))]))
+#+END_SRC
+
+* Unit Tests
+
+Racketeers often like to write unit tests for a function before they start writing that function. It's also common to put the unit tests near the function definition, so they can be worked in tandem.
+
+** Writing Tests with Rackunit
+
+The rackunit library helps us create unit tests called checks.
+
+#+BEGIN_SRC racket :tangle rackunit-test.rkt
+#lang racket
+
+(module+ test
+  (require rackunit))
+
+(define (our-div num denom)
+  (/ num denom))
+
+(module+ test
+  (check-equal? (our-div 42 6) 7)
+  (check-equal? (our-div 42 2) 21)
+  (check-exn exn:fail? (lambda () (our-div 42 0))))
+
+(define (our-mult factor1 factor2)
+  (* factor1 factor2))
+
+(module+ test
+  (check-equal? (our-mult 6 7) 42)
+  (check-exn exn:fail? (lambda () (our-mult "a" "b"))))
+#+END_SRC
+
+** Adding Tests to the Tokenizer
+
+#+BEGIN_SRC racket :tangle tokenizer.rkt
+#lang br/quicklang
+(require brag/support racket/contract)
+
+(module+ test
+  (require rackunit))
+
+(define (jsonic-token? x)
+  (or (eof-object? x)
+      (token-struct? x)))
+
+(module+ test
+  (check-true (jsonic-token? eof))
+  (check-true (jsonic-token? (token 'A-TOKEN-STRUCT "hi")))
+  (check-false (jsonic-token? 42)))
+
+; make-tokenizer takes an input-port
+(define (make-tokenizer port)
+  ; next-token takes nothing and returns either EOF or a token-structure
+  (define (next-token)
+    (define jsonic-lexer
+      (lexer
+       ; add rules
+       [(from/to "//" "\n") (next-token)]  ; handles line comments. ignore everything from // to the new line. once we have the match, ignore it by calling next-token
+       [(from/to "@$" "$@") (token 'SEXP-TOK (trim-ends "@$" lexeme "$@"))]  ; takes in sexpression tokens
+       [any-char (token 'CHAR-TOK lexeme)]  ; handles tokens not processed by the above
+       ))
+    (jsonic-lexer port))
+  next-token)
+
+(provide (contract-out
+          [make-tokenizer (input-port? . -> . (-> jsonic-token?))]))
+
+(module+ test
+  (check-equal?
+   (apply-tokenizer-maker make-tokenizer "// comment\n")
+   empty)
+  (check-equal?
+   (apply-tokenizer-maker make-tokenizer "@$ (+ 6 7) $@")
+   (list (token-struct 'SEXP-TOK " (+ 6 7) " #f #f #f #f #f)))
+  (check-equal?
+   (apply-tokenizer-maker make-tokenizer "hi")
+   (list (token-struct 'CHAR-TOK "h" #f #f #f #f #f)
+         (token-struct 'CHAR-TOK "i" #f #f #f #f #f))))
+#+END_SRC
+
+** Adding Parser Tests in a Separate Module
+
+One limitation of the test submodule is that we can only use it in modules that use a language that supports module+.
+Our parser.rkt module is written in #lang brag, which doesn't support module+. In this case, we can still make unit
+tests for parse using rackunit, but we'll have to move them to a separate file.
+
+Recall that our parser takes a list of tokens and turns them into a parse tree.
+
+#+BEGIN_SRC racket :tangle parser-test.rkt
+#lang br
+(require jsonic/parser
+         jsonic/tokenizer
+         brag/support
+         rackunit)
+
+(check-equal?
+ (parse-to-datum
+  (apply-tokenizer-maker make-tokenizer "// line comment\n"))
+ '(jsonic-program))
+
+(check-equal?
+ (parse-to-datum
+  (apply-tokenizer-maker make-tokenizer "@$ 42 $@"))
+ '(jsonic-program (jsonic-sexp " 42 ")))
+
+(check-equal?
+ (parse-to-datum
+  (apply-tokenizer-maker make-tokenizer "hi"))
+ '(jsonic-program
+   (jsonic-char "h")
+   (jsonic-char "i")))
+
+(check-equal?
+ (parse-to-datum
+  (apply-tokenizer-maker make-tokenizer
+                         "hi\n//comment \n@$ 42 $@"))
+ '(jsonic-program
+   (jsonic-char "h")
+   (jsonic-char "i")
+   (jsonic-char "\n")
+   (jsonic-sexp " 42 ")))
+#+END_SRC
+
+* Source Locations
