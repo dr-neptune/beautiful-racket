@@ -69,7 +69,7 @@ raco pkg install
 When we invoke #lang jsonic, Racket will look for a "main.rkt" module within our jsonic directory.
 Within that module, it will expect to find a reader submodule that provides our read-syntax function.
 
-#+BEGIN_SRC racket :tangle main.rkt
+#+BEGIN_SRC racket
 #lang br/quicklang
 (module reader br
   (require "reader.rkt")
@@ -588,3 +588,53 @@ Line count and column count are available from the input port. We can add source
 #+END_SRC
 
 * DrRacket Integration
+
+When we invoke a language in DrRacket, it looks for a get-info function in the same place as read-syntax (the reader submodule of "main.rkt").
+DrRacket uses the get-info function to determine if the language supports certain features within DrRacket, and as a way of dispatching certain
+tasks to functions we'll provide.
+
+#+BEGIN_SRC racket :tangle main.rkt
+#lang br/quicklang
+
+(module reader br
+  (require "reader.rkt")
+  (provide read-syntax get-info)
+  (define (get-info port src-mod src-line src-col src-pos)
+    (define (handle-query key default)
+      (case key
+        #;[(color-lexer)
+         (dynamic-require 'jsonic/colorer 'color-jsonic)]
+        #;[(drracket:indentation)
+         (dynamic-require 'jsonic/indenter 'indent-jsonic)]
+        #;[(drracket:toolbar-buttons)
+         (dynamic-require 'jsonic/buttons 'button-list)]
+        [else default]))
+    handle-query))
+#+END_SRC
+
+* Syntax Coloring
+
+#+BEGIN_SRC racket :tangle colorer.rkt
+#lang br
+(require brag/support syntax-color/racket-lexer)
+
+(define jsonic-lexer
+  (lexer
+   [(eof) (values lexeme 'eof #f #f #f)]                        ; handle eof
+   [(:or "@$" "$@")                                             ; handle delimiters
+    (values lexeme 'parenthesis
+            (if (equal? lexeme "@$") '|(| '|)|)
+                (pos lexeme-start) (pos lexeme-end))]
+    [(from/to "//" "\n")
+     (values lexeme 'comment #f
+             (pos lexeme-start) (pos lexeme-end))]
+    [any-char
+     (values lexeme 'string #f
+             (pos lexeme-start) (pos lexeme-end))]))
+
+(define (color-jsonic port offset racket-coloring-mode?) ...)
+
+(provide color-jsonic)
+#+END_SRC
+
+On the lexer toggler
