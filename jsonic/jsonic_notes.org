@@ -308,7 +308,7 @@ Now we'll add the macros that correspond to the production rules in our jsonic g
 
 A contract wraps around a function and ensures its input arguments and return value meet requirements that we specify. If the function tries to accept arguments or return a value that doesn't meet these requirements, the contract raises an error.
 
-#+BEGIN_SRC racket :tangle contract-test.rkt
+#+BEGIN_SRC racket
 #lang racket
 (module our-submod br
   (require racket/contract)
@@ -616,53 +616,47 @@ tasks to functions we'll provide.
 
 #+BEGIN_SRC racket :tangle colorer.rkt
 #lang br
-(require brag/support syntax-color/racket-lexer
-         racket/contract)
+(require brag/support syntax-color/racket-lexer racket/contract)
+
+(define in-racket-expr? #f)
+
+(define (color-jsonic port)
+  (define jsonic-lexer
+    (lexer
+     [(eof) (values lexeme 'eof #f #f #f)]
+     ["@$" (begin
+             (set! in-racket-expr? #t)
+             (values lexeme 'parenthesis '|(|
+                     (pos lexeme-start) (pos lexeme-end)))]
+     ["$@" (begin
+             (set! in-racket-expr? #f)
+             (values lexeme 'parenthesis '|)|
+                     (pos lexeme-start) (pos lexeme-end)))]
+     [(from/to "//" "\n")
+      (values lexeme 'comment #f
+              (pos lexeme-start) (pos lexeme-end))]
+     [any-char
+      (values lexeme 'string #f
+              (pos lexeme-start) (pos lexeme-end))]))
+  (if (and in-racket-expr?
+           (not (equal? (peek-string 2 0 port) "$@")))
+      (racket-lexer port)
+      (jsonic-lexer port)))
+(provide
+ (contract-out
+  [color-jsonic
+   (input-port? . -> . (values
+                        (or/c string? eof-object?)
+                        symbol?
+                        (or/c symbol? #f)
+                        (or/c exact-positive-integer? #f)
+                        (or/c exact-positive-integer? #f)))]))
 
 (module+ test
   (require rackunit)
   (check-equal? (values->list
-                 (color-jsonic (open-input-string "x") 0 #f))
-                (list "x" 'string #f 1 2 0 #f)))
-
-(define jsonic-lexer
-  (lexer
-   [(eof) (values lexeme 'eof #f #f #f)]                        ; handle eof
-   [(:or "@$" "$@")                                             ; handle delimiters
-    (values lexeme 'parenthesis
-            (if (equal? lexeme "@$") '|(| '|)|)
-                (pos lexeme-start) (pos lexeme-end))]
-    [(from/to "//" "\n")
-     (values lexeme 'comment #f
-             (pos lexeme-start) (pos lexeme-end))]
-    [any-char
-     (values lexeme 'string #f
-             (pos lexeme-start) (pos lexeme-end))]))
-
-(define (color-jsonic port offset racket-coloring-mode?)
-  (cond
-    [(or (not racket-coloring-mode?)
-         (equal? (peek-string 2 0 port) "$@"))
-     (define-values (str cat paren start end)
-       (jsonic-lexer port))
-     (define switch-to-racket-mode (equal? str "@$"))
-     (values str cat paren start end 0 switch-to-racket-mode)]
-    [else
-     (define-values (str cat paren start end)
-       (racket-lexer port))
-     (values str cat paren start end 0 #t)]))
-
-(provide (contract-out
-          [color-jsonic
-           (input-port? exact-nonnegative-integer? boolean?
-                        . -> . (values
-                                (or/c string? eof-object?)
-                                symbol?
-                                (or/c symbol? #f)
-                                (or/c exact-positive-integer? #f)
-                                (or/c exact-positive-integer? #f)
-                                exact-nonnegative-integer?
-                                boolean?))]))
+                 (color-jsonic (open-input-string "x")))
+                (list "x" 'string #f 1 2)))
 #+END_SRC
 
 * Indenting
@@ -783,4 +777,46 @@ We can also simply prefix existing s-expressions
 
 This is a domain specific language that relies on the @racketmodname[json] library.
 In particular, the @racket[jsexpr->string] function.
+
+If we start with this:
+
+@verbatim|{
+          #lang jsonic
+          [
+           @$ 'null $@,
+           @$ (* 6 7) $@,
+           @$ (= 2 (+ 1 1)) $@
+           ]
+          }|
+
+We'll end up with this:
+
+@verbatim{
+          [
+           null,
+           42,
+           true
+           ]
+          }
+#+END_SRC
+
+* The info.rkt File
+
+#+BEGIN_SRC racket :tangle info.rkt
+#lang info
+(define collection "jsonic")
+(define version "1.0")
+(define scribblings '(("scribblings/jsonic.scrbl")))
+(define test-omit-paths '("jsonic-lang-test.rkt"))
+(define deps '("base"
+               "beautiful-racket-demo"
+               "beautiful-racket-lib"
+               "brag-lib"
+               "draw-lib"
+               "gui-lib"
+               "rackunit-lib"
+               "scribble-text-lib"
+               "syntax-color-lib"))
+(define build-deps '("racket-doc"
+                     "scribble-lib"))
 #+END_SRC
