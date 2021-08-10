@@ -1,0 +1,157 @@
+#+TITLE: Basic Notes
+
+* Specification and Setup
+
+Our version of BASIC will be able to run simple programs like this:
+
+#+BEGIN_SRC racket
+#lang basic
+30 rem print 'ignored'
+35
+50 print "never gets here"
+40 end
+60 print 'three' : print 1.0 + 3
+70 goto 11. + 18.5 + .5 rem ignored
+10 print "o" ; "n" ; "e"
+20 print : goto 60.0 : end
+#+END_SRC
+
+To do this, we need to implement 4 statements:
+
+1. print takes a string, number, or numerical expression as input and displays it, followed by a newline.
+2. goto takes a number or numerical expression as input, and immediately jumps to that line of the program
+3. rem starts a line comment. Anything between the rem and the next newline is ignored.
+4. end immediately aborts the program
+
+** Design
+
+We're going to model our code above as pseudocode
+
+#+BEGIN_SRC racket
+#lang basic
+(define (30) (rem print 'ignored'))
+(define (35) (void))
+(define (50) (print "never gets here"))
+(define (40) (end))
+(define (60) (print 'three') (print (+ 1.0 3)))
+(define (70) (goto (+ 11. 18.5 .5) rem ignored))
+(define (10) (print "o" "n" "e"))
+(define (20) (print) (goto 60.0) (end))
+#+END_SRC
+
+Our program still needs to put these lines in numerical order so it knows where to start, and in which order to execute the lines (i.e., once it's done with line X, it needs to discover which line comes next). So we'll create a hash table that maps line numbers to their associated functions.
+
+* The Lexer
+
+#+BEGIN_SRC racket :tangle lexer.rkt
+#lang br
+(require brag/support)
+
+(define-lex-abbrev digits (:+ (char-set "0123456789")))
+
+(define basic-lexer
+  (lexer-srcloc
+   ["\n" (token 'NEWLINE lexeme)]                       ; handle newlines
+   [whitespace (token lexeme #:skip? #t)]               ; handle whitespace
+   [(from/stop-before "rem" "\n") (token 'REM lexeme)]  ; handle comments "rem"
+   [(:or "print" "goto" "end" "+" ":" ";")              ; handle parsing operators
+    (token lexeme lexeme)]
+   [digits (token 'INTEGER (string->number lexeme))]    ; handle a single digit
+   [(:or (:seq (:? digits) "." digits)                  ; handle compound digit expressions
+         (:seq digits "."))
+    (token 'DECIMAL (string->number lexeme))]
+   [(:or (from/to "\""  "\"") (from/to "'" "'"))        ; handle strings
+    (token 'STRING
+           (substring lexeme
+                      1 (sub1 (string-length lexeme))))]))
+
+(provide basic-lexer)
+#+END_SRC
+
+** Testing the Lexer
+
+#+BEGIN_SRC racket :tangle lexer-test.rkt
+#lang br
+(require "lexer.rkt" brag/support rackunit)
+
+(define (lex str)
+  (apply-port-proc basic-lexer str))
+
+(check-equal? (lex "") empty)
+(check-equal?
+ (lex " ")
+ (list (srcloc-token (token " " #:skip? #t)
+                     (srcloc 'string 1 0 1 1))))
+(check-equal?
+ (lex "rem ignored\n")
+ (list (srcloc-token (token 'REM "rem ignored")
+                     (srcloc 'string 1 0 1 11))
+       (srcloc-token (token 'NEWLINE "\n")
+                     (srcloc 'string 1 11 12 1))))
+(check-equal?
+ (lex "print")
+ (list (srcloc-token (token "print" "print")
+                     (srcloc 'string 1 0 1 5))))
+(check-equal?
+ (lex "goto")
+ (list (srcloc-token (token "goto" "goto")
+                     (srcloc 'string 1 0 1 4))))
+(check-equal?
+ (lex "end")
+ (list (srcloc-token (token "end" "end")
+                     (srcloc 'string 1 0 1 3))))
+(check-equal?
+ (lex "+")
+ (list (srcloc-token (token "+" "+")
+                     (srcloc 'string 1 0 1 1))))
+(check-equal?
+ (lex ";")
+ (list (srcloc-token (token ";" ";")
+                     (srcloc 'string 1 0 1 1))))
+(check-equal?
+ (lex ":")
+ (list (srcloc-token (token ":" ":")
+                     (srcloc 'string 1 0 1 1))))
+(check-equal?
+ (lex "12")
+ (list (srcloc-token (token 'INTEGER 12)
+                     (srcloc 'string 1 0 1 2))))
+(check-equal?
+ (lex "1.2")
+ (list (srcloc-token (token 'DECIMAL 1.2)
+                     (srcloc 'string 1 0 1 3))))
+(check-equal?
+ (lex "12.")
+ (list (srcloc-token (token 'DECIMAL 12.)
+                     (srcloc 'string 1 0 1 3))))
+(check-equal?
+ (lex ".12")
+ (list (srcloc-token (token 'DECIMAL .12)
+                     (srcloc 'string 1 0 1 3))))
+(check-equal?
+ (lex "\"foo\"")
+ (list (srcloc-token (token 'STRING "foo")
+                     (srcloc 'string 1 0 1 5))))
+(check-equal?
+ (lex "'foo'")
+ (list (srcloc-token (token 'STRING "foo")
+                     (srcloc 'string 1 0 1 5))))
+(check-exn exn:fail:read? (lambda () (lex "x")))
+#+END_SRC
+
+* The Tokenizer
+
+#+BEGIN_SRC racket :tangle tokenizer.rkt
+#lang br
+(require "lexer.rkt" brag/support)
+
+(define (make-tokenizer ip [path #f])
+  (port-count-lines! ip)
+  (lexer-file-path path)
+  (define (next-token) (basic-lexer ip))
+  next-token)
+
+(provide make-tokenizer)
+#+END_SRC
+
+* The Parser
