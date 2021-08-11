@@ -155,3 +155,18 @@ Our program still needs to put these lines in numerical order so it knows where 
 #+END_SRC
 
 * The Parser
+
+#+BEGIN_SRC racket :tangle parser.rkt
+#lang brag
+b-program : [b-line] (NEWLINE [b-line])*
+b-line : b-line-num [b-statement] (":" [b-statement])* [b-rem]
+b-line-num : INTEGER
+b-statement : b-end | b-print | b-goto
+b-rem : REM
+b-end : "end"
+b-print : "print" [b-printable] (";" [b-printable])*
+b-printable : STRING | b-expr
+b-goto :
+b-expr : b-sum
+
+#+END_SRC
