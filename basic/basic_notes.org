@@ -158,15 +158,141 @@ Our program still needs to put these lines in numerical order so it knows where 
 
 #+BEGIN_SRC racket :tangle parser.rkt
 #lang brag
-b-program : [b-line] (NEWLINE [b-line])*
-b-line : b-line-num [b-statement] (":" [b-statement])* [b-rem]
-b-line-num : INTEGER
-b-statement : b-end | b-print | b-goto
+b-program : [b-line] (/NEWLINE [b-line])*
+b-line : b-line-num [b-statement] (/":" [b-statement])* [b-rem]
+@b-line-num : INTEGER
+@b-statement : b-end | b-print | b-goto
 b-rem : REM
-b-end : "end"
-b-print : "print" [b-printable] (";" [b-printable])*
-b-printable : STRING | b-expr
-b-goto :
+b-end : /"end"
+b-print : /"print" [b-printable] (/";" [b-printable])*
+@b-printable : STRING | b-expr
+b-goto : /"goto" b-expr
 b-expr : b-sum
+b-sum : b-number (/"+" b-number)*
+@b-number : INTEGER | DECIMAL
+#+END_SRC
 
+#+BEGIN_SRC racket :tangle parser-test.rkt
+#lang br
+(require basic/parser basic/tokenizer brag/support)
+
+(define str #<<HERE
+10 print "hello" : print "world"
+20 goto 9 + 10 + 11
+30 end
+HERE
+)
+
+(parse-to-datum (apply-tokenizer make-tokenizer str))
+
+(define str2 #<<HERE
+30 rem print 'ignored'
+35
+50 print "never gets here"
+40 end
+60 print 'three' : print 1.0 + 3
+70 goto 11. + 18.5 + .5 rem ignored
+10 print "o" ; "n" ; "e"
+20 print : goto 60.0 : end
+HERE
+)
+
+(parse-to-datum (apply-tokenizer make-tokenizer str2))
+#+END_SRC
+
+What if we just wrote out our source in a little lang, and then ran the result?
+
+#+BEGIN_SRC racket :tangle parse-only.rkt
+#lang br/quicklang
+(require "parser.rkt" "tokenizer.rkt")
+
+(define (read-syntax path port)
+  (define parse-tree (parse path (make-tokenizer port path)))
+  (strip-bindings
+   #`(module basic-parser-mod basic/parse-only
+       #,parse-tree)))
+(module+ reader (provide read-syntax))
+
+(define-macro (parser-only-mb PARSE-TREE)
+  #'(#%module-begin
+     'PARSE-TREE))
+(provide (rename-out [parser-only-mb #%module-begin]))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle test.rkt
+#lang basic/parse-only
+10 print "hello" : print "world"
+20 goto 9 + 10 + 11
+30 end
+#+END_SRC
+
+Likewise, it's easy to make a similar basic/tokenize-only dialect that reveals the output from the tokenizer
+
+#+BEGIN_SRC racket :tangle tokenize-only.rkt
+#lang br/quicklang
+(require brag/support "tokenizer.rkt")
+
+(define (read-syntax path port)
+  (define tokens (apply-tokenizer make-tokenizer port))
+  (strip-bindings
+   #`(module basic-tokens-mod basic/tokenize-only
+       #,@tokens)))
+(module+ reader (provide read-syntax))
+
+(define-macro (tokenize-only-mb TOKEN ...)
+  #'(#%module-begin
+     (list TOKEN ...)))
+(provide (rename-out [tokenize-only-mb #%module-begin]))
+#+END_SRC
+
+* The Reader
+
+#+BEGIN_SRC racket :tangle main.rkt
+#lang br/quicklang
+(require "parser.rkt" "tokenizer.rkt")
+
+(define (read-syntax path port)
+  (define parse-tree (parse path (make-tokenizer port path)))
+  (strip-bindings
+   #`(module basic-mod basic/expander
+       #,parse-tree)))
+
+(module+ reader
+  (provide read-syntax))
+#+END_SRC
+
+* The Expander
+
+Key Tasks:
+
+- We need to convert each line of the source program -- that is, each b-line element -- into a function
+- We need to make a hash table that maps line numbers to their associated functions, and a main program loop that looks up functions in this table and runs them
+- We need to implement the behavior of our statements and expressions
+
+#+BEGIN_SRC racket :tangle expander.rkt
+#lang br/quicklang
+
+; turning program lines into functions
+
+(define-macro (b-line NUM STATEMENT ...)
+  (with-pattern ([LINE-NUM (prefix-id "line-" #'NUM
+                                      #:source #'NUM)])
+    (syntax/loc caller-stx
+      (define (NUM) (void) STATEMENT ...))))
+
+; our module-begin macro
+(define-macro (b-module-begin (b-program LINE ...))
+  (with-pattern
+    ([((b-line NUM STATEMENT ...) ...) #'(LINE ...)]
+     [(LINE-FUNC ...) (prefix-id "line-" #'(NUM ...))])
+    #'(#%module-begin
+     LINE ...
+     (define line-table
+       (apply hasheqv (append (list NUM LINE-FUNC) ...)))
+     (void (run line-table)))))
+(provide (rename-out [b-module-begin #%module-begin]))
+
+; the main loop
+(define (run line-table)
+  ...)
 #+END_SRC
