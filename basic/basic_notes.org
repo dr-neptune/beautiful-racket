@@ -251,14 +251,22 @@ Likewise, it's easy to make a similar basic/tokenize-only dialect that reveals t
 #lang br/quicklang
 (require "parser.rkt" "tokenizer.rkt")
 
+(module+ reader
+  (provide read-syntax get-info))
+
 (define (read-syntax path port)
   (define parse-tree (parse path (make-tokenizer port path)))
   (strip-bindings
    #`(module basic-mod basic/expander
        #,parse-tree)))
 
-(module+ reader
-  (provide read-syntax))
+(define (get-info port src-mod src-line src-col src-pos)
+  (define (handle-query key default)
+    (case key
+      [(color-lexer)
+       (dynamic-require 'basic-colorer 'color)]
+      [else default]))
+  handle-query)
 #+END_SRC
 
 * The Expander
@@ -269,30 +277,250 @@ Key Tasks:
 - We need to make a hash table that maps line numbers to their associated functions, and a main program loop that looks up functions in this table and runs them
 - We need to implement the behavior of our statements and expressions
 
-#+BEGIN_SRC racket :tangle expander.rkt
-#lang br/quicklang
 
-; turning program lines into functions
+#+BEGIN_SRC racket
+#lang br/quicklang
+(provide (matching-identifiers-out #rx"^b-" (all-defined-out)))
 
 (define-macro (b-line NUM STATEMENT ...)
   (with-pattern ([LINE-NUM (prefix-id "line-" #'NUM
                                       #:source #'NUM)])
     (syntax/loc caller-stx
-      (define (NUM) (void) STATEMENT ...))))
+      (define (LINE-NUM) (void) STATEMENT ...))))
 
-; our module-begin macro
 (define-macro (b-module-begin (b-program LINE ...))
   (with-pattern
-    ([((b-line NUM STATEMENT ...) ...) #'(LINE ...)]
-     [(LINE-FUNC ...) (prefix-id "line-" #'(NUM ...))])
+      ([((b-line NUM STMT ...) ...) #'(LINE ...)]
+       [(LINE-FUNC ...) (prefix-id "line-" #'(NUM ...))])
     #'(#%module-begin
-     LINE ...
-     (define line-table
-       (apply hasheqv (append (list NUM LINE-FUNC) ...)))
-     (void (run line-table)))))
+       LINE ...
+       (define line-table
+         (apply hasheqv (append (list NUM LINE-FUNC) ...)))
+       (void (run line-table)))))
 (provide (rename-out [b-module-begin #%module-begin]))
 
-; the main loop
+(struct end-program-signal ())
+(struct change-line-signal (val))
+
+(define (b-end) (raise (end-program-signal)))
+(define (b-goto expr) (raise (change-line-signal expr)))
+
 (define (run line-table)
-  ...)
+  (define line-vec
+    (list->vector (sort (hash-keys line-table) <)))
+  (with-handlers ([end-program-signal? (λ (exn-val) (void))])
+    (for/fold ([line-idx 0])
+              ([i (in-naturals)]
+               #:break (>= line-idx (vector-length line-vec)))
+      (define line-num (vector-ref line-vec line-idx))
+      (define line-func (hash-ref line-table line-num))
+      (with-handlers
+          ([change-line-signal?
+            (λ (cls)
+              (define clsv (change-line-signal-val cls))
+              (or
+               (and (exact-positive-integer? clsv)
+                    (vector-member clsv line-vec))
+               (error
+                (format "error in line ~a: line ~a not found"
+                        line-num clsv))))])
+        (line-func)
+        (add1 line-idx)))))
+
+(define (b-rem val) (void))
+(define (b-print . vals)
+  (displayln (string-append* (map ~a vals))))
+(define (b-sum . vals) (apply + vals))
+(define (b-expr expr)
+  (if (integer? expr) (inexact->exact expr) expr))
+#+END_SRC
+
+* Into the Rapids: More BASIC
+
+We will:
+
+1. Write the syntax colorer
+2. Extend our use of exceptions to support better line errors
+3. Add variables and input
+4. Support more math expressions and account for order of operations
+5. Add conditionals
+6. Add gosub and for loops
+
+* Specification and Setup
+
+Our lexer, tokenizer, parser and main module (containing our reader) will remain the same.
+
+The expander will be trimmed down and our supporting structure types will be moved into a new "struct.rkt" module.
+Our run function will go into run.rkt, and everything else (functions and macros that implement language constructs) will be moved
+into a new "elements.rkt" module.
+
+#+BEGIN_SRC racket :tangle expander.rkt
+#lang br/quicklang
+(require "struct.rkt" "run.rkt" "elements.rkt")
+(provide (rename-out [b-module-begin #%module-begin])
+         (all-from-out "elements.rkt"))
+
+(define-macro (b-module-begin (b-program LINE ...))
+  (with-pattern
+    ([((b-line NUM STMT ...) ...) #'(LINE ...)]
+     [(LINE-FUNC ...) (prefix-id "line-" #'(NUM ...))])
+    #'(#%module-begin
+       LINE ...
+       (define line-table
+         (apply hasheqv (append (list NUM LINE-FUNC) ...)))
+       (void (run line-table)))))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle struct.rkt
+#lang br
+(provide (struct-out end-program-signal)
+         (struct-out change-line-signal)
+         (struct-out line-error))
+
+(struct end-program-signal ())
+(struct change-line-signal (val))
+(struct line-error (msg))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle run.rkt
+#lang br
+(require "line.rkt" "struct.rkt")
+(provide run)
+
+(define (run line-table)
+  (define line-vec
+    (list->vector (sort (hash-keys line-table) <)))
+  (with-handlers ([end-program-signal? (lambda (exn-val) (void))])
+    (for/fold ([line-idx 0])
+              ([i (in-naturals)]
+               #:break (>= line-idx (vector-length line-vec)))
+      (define line-num (vector-ref line-vec line-idx))
+      (define line-func (hash-ref line-table line-num))
+      (with-handlers
+        ([change-line-signal?
+          (lambda (cls)
+            (define clsv (change-line-signal-val cls))
+            (or
+             (and (exact-positive-integer? clsv)
+                  (vector-member clsv line-vec))
+             (line-func "error in line ~a: line ~a not found" line-num clsv)))])
+        (line-func)
+        (add1 line-idx)))))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle elements.rkt
+#lang br
+(require "line.rkt" "go.rkt"
+         "expr.rkt" "misc.rkt")
+
+(provide
+ (all-from-out "line.rkt" "go.rkt"
+               "expr.rkt" "misc.rkt"))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle line.rkt
+#lang br
+(require "struct.rkt")
+(provide b-line raise-line-error)
+
+(define-macro (b-line NUM STATEMENT ...)
+  (with-pattern ([LINE-NUM (prefix-id "line-" #'NUM
+                                      #:source #'NUM)])
+    (syntax/loc caller-stx
+      (define (LINE-NUM #:error [msg #f])
+        (with-handlers
+          ([line-error?
+            (lambda (le) (handle-line-error NUM le))])
+          (when msg (raise-line-error msg))
+          STATEMENT ...)))))
+
+(define (raise-line-error str)
+  (raise (line-error str)))
+
+(define (handle-line-error num le)
+  (error (format "error in line ~a: ~a"
+                 num (line-error-msg le))))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle go.rkt
+#lang br
+(require "struct.rkt" "line.rkt")
+(provide b-end b-goto)
+
+(define (b-end) (raise (end-program-signal)))
+
+(define (b-goto num-expr)
+  (raise (change-line-signal num-expr)))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle expr.rkt
+#lang br
+(provide b-sum b-expr)
+
+(define (b-sum . vals) (apply + vals))
+
+(define (b-expr expr)
+  (if (integer? expr)
+      (inexact->exact expr)
+      expr))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle misc.rkt
+#lang br
+(require "struct.rkt")
+(provide b-rem b-print)
+
+(define (b-rem val) (void))
+
+(define (b-print . vals)
+  (displayln (string-append* (map ~a vals))))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle sample.rkt
+#lang basic
+30 rem print 'ignored'
+35
+50 print "never gets here"
+40 end
+60 print 'three' : print 1.0 + 3
+70 goto 11. + 18.5 + .5 rem ignored
+10 print "o" ; "n" ; "e"
+20 print : goto 60.0 : end
+#+END_SRC
+
+* The Syntax Colorer
+
+#+BEGIN_SRC racket :tangle colorer.rkt
+#lang br
+(require "lexer.rkt" brag/support)
+(provide basic-colorer)
+
+(define (basic-colorer port)
+  (define (handle-lexer-error excn)
+    (define excn-srclocs (exn:fail:read-srclocs excn))
+    (srcloc-token (token 'ERROR) (car excn-srclocs)))
+  (define srcloc-tok (basic-lexer port)
+    (with-handlers ([exn:fail:read? handle-lexer-error])
+      (basic-lexer port)))
+  (match srcloc-tok
+    [(? eof-object?) (values srcloc-tok 'eof #f #f #f)]
+    [else
+     (match-define
+       (srcloc-token
+        (token-struct type val _ _ _ _ _)
+        (srcloc _ _ _ posn span)) srcloc-tok)
+     (define start posn)
+     (define end (+ start span))
+     (match-define (list cat paren)
+       (match type
+         ['STRING '(string #f)]
+         ['REM '(comment #f)]
+         ['ERROR '(error #f)]
+         [else (match val
+                 [(? number?) '(constant #f)]
+                 [(? symbol?) '(symbol #f)]
+                 ["(" '(parenthesis |(|)]
+                 [")" '(parenthesis |)|)]
+                 [else '(no-color #f)])]))
+     (values val cat paren start end)]))
 #+END_SRC
