@@ -49,13 +49,18 @@ Our program still needs to put these lines in numerical order so it knows where 
 
 (define-lex-abbrev digits (:+ (char-set "0123456789")))
 
+(define-lex-abbrev reserved-terms (:or "print" "goto" "end" "+" ":" ";" "let"
+                                       "=" "input" "-" "*" "/" "^" "mod" "(" ")"
+                                       "if" "then" "else" "<" ">" "<>" "and" "or" "not"))
+
 (define basic-lexer
   (lexer-srcloc
    ["\n" (token 'NEWLINE lexeme)]                       ; handle newlines
    [whitespace (token lexeme #:skip? #t)]               ; handle whitespace
    [(from/stop-before "rem" "\n") (token 'REM lexeme)]  ; handle comments "rem"
-   [(:or "print" "goto" "end" "+" ":" ";")              ; handle parsing operators
-    (token lexeme lexeme)]
+   [reserved-terms (token lexeme lexeme)]
+   [(:seq alphabetic (:* (:or alphabetic numeric "$")))
+    (token 'ID (string->symbol lexeme))]
    [digits (token 'INTEGER (string->number lexeme))]    ; handle a single digit
    [(:or (:seq (:? digits) "." digits)                  ; handle compound digit expressions
          (:seq digits "."))
@@ -161,14 +166,26 @@ Our program still needs to put these lines in numerical order so it knows where 
 b-program : [b-line] (/NEWLINE [b-line])*
 b-line : b-line-num [b-statement] (/":" [b-statement])* [b-rem]
 @b-line-num : INTEGER
-@b-statement : b-end | b-print | b-goto
+@b-statement : b-end | b-print | b-goto | b-let | b-input | b-if
 b-rem : REM
 b-end : /"end"
 b-print : /"print" [b-printable] (/";" [b-printable])*
 @b-printable : STRING | b-expr
 b-goto : /"goto" b-expr
-b-expr : b-sum
-b-sum : b-number (/"+" b-number)*
+b-let : [/"let"] b-id /"=" (b-expr | STRING)
+b-if : /"if" b-expr /"then" (b-statement | b-expr) [/"else" (b-statement | b-expr)]
+b-input : /"input" b-id
+@b-id : ID
+b-expr : b-or-expr
+b-or-expr : [b-or-expr "or"] b-and-expr
+b-and-expr : [b-and-expr "and"] b-not-expr
+b-not-expr : ["not"] b-comp-expr
+b-comp-expr : [b-comp-expr ("="|"<"|">"|"<>")] b-sum
+b-sum : [b-sum ("+"|"-")] b-product
+b-product : [b-product ("*"|"/"|"mod")] b-neg
+b-neg : ["-"] b-expt
+b-expt : [b-expt "^"] b-value
+@b-value : b-number | b-id | /"(" b-expr /")"
 @b-number : INTEGER | DECIMAL
 #+END_SRC
 
@@ -363,12 +380,23 @@ into a new "elements.rkt" module.
 (define-macro (b-module-begin (b-program LINE ...))
   (with-pattern
     ([((b-line NUM STMT ...) ...) #'(LINE ...)]
-     [(LINE-FUNC ...) (prefix-id "line-" #'(NUM ...))])
+     [(LINE-FUNC ...) (prefix-id "line-" #'(NUM ...))]
+     [(VAR-ID ...) (find-unique-var-ids #'(LINE ...))])
     #'(#%module-begin
+       (define VAR-ID 0) ...
        LINE ...
        (define line-table
          (apply hasheqv (append (list NUM LINE-FUNC) ...)))
        (void (run line-table)))))
+
+(begin-for-syntax
+  (require racket/list)
+  (define (find-unique-var-ids line-stxs)
+    (remove-duplicates
+     (for/list ([stx (in-list (stx-flatten line-stxs))]
+                #:when (syntax-property stx 'b-id))
+       stx)
+     #:key syntax->datum)))
 #+END_SRC
 
 #+BEGIN_SRC racket :tangle struct.rkt
@@ -411,11 +439,11 @@ into a new "elements.rkt" module.
 #+BEGIN_SRC racket :tangle elements.rkt
 #lang br
 (require "line.rkt" "go.rkt"
-         "expr.rkt" "misc.rkt")
+         "expr.rkt" "misc.rkt" "cond.rkt")
 
 (provide
  (all-from-out "line.rkt" "go.rkt"
-               "expr.rkt" "misc.rkt"))
+               "expr.rkt" "misc.rkt" "cond.rkt"))
 #+END_SRC
 
 #+BEGIN_SRC racket :tangle line.rkt
@@ -455,25 +483,93 @@ into a new "elements.rkt" module.
 
 #+BEGIN_SRC racket :tangle expr.rkt
 #lang br
-(provide b-sum b-expr)
-
-(define (b-sum . vals) (apply + vals))
+(provide b-sum b-expr b-product b-neg b-expt)
 
 (define (b-expr expr)
   (if (integer? expr)
       (inexact->exact expr)
       expr))
+
+(define-macro-cases b-sum
+  [(_ VAL) #'VAL]
+  [(_ LEFT "+" RIGHT) #'(+ LEFT RIGHT)]
+  [(_ LEFT "-" RIGHT) #'(- LEFT RIGHT)])
+
+(define-macro-cases b-product
+  [(_ VAL) #'VAL]
+  [(_ LEFT "*" RIGHT) #'(* LEFT RIGHT)]
+  [(_ LEFT "/" RIGHT) #'(/ LEFT RIGHT 1.0)]  ; force a floating point result with 1.0
+  [(_ LEFT "mod" RIGHT) #'(modulo LEFT RIGHT)])
+
+(define-macro-cases b-neg
+  [(_ VAL) #'VAL]
+  [(_ "-" VAL) #'(- VAL)])
+
+(define-macro-cases b-expt
+  [(_ VAL) #'VAL]
+  [(_ LEFT "^" RIGHT) #'(expt LEFT RIGHT)])
 #+END_SRC
 
 #+BEGIN_SRC racket :tangle misc.rkt
 #lang br
 (require "struct.rkt")
-(provide b-rem b-print)
+(provide b-rem b-print b-let b-input)
 
 (define (b-rem val) (void))
 
 (define (b-print . vals)
   (displayln (string-append* (map ~a vals))))
+
+(define-macro (b-let ID VAL) #'(set! ID VAL))
+
+(define-macro (b-input ID)
+  #'(b-let ID (let* ([str (read-line)]
+                     [num (string->number (string-trim str))])
+                (or num str))))
+#+END_SRC
+
+#+BEGIN_SRC racket :tangle cond.rkt
+#lang br
+(require "go.rkt")
+(provide b-if b-or-expr b-and-expr b-not-expr b-comp-expr)
+
+(define (bool->int val) (if val 1 0))
+(define nonzero? (compose1 not zero?))
+
+(define-macro-cases b-or-expr
+  [(_ VAL) #'VAL]
+  [(_ LEFT "or" RIGHT)
+   #'(bool->int (or (nonzero? LEFT) (nonzero? RIGHT)))])
+
+(define-macro-cases b-and-expr
+  [(_ VAL) #'VAL]
+  [(_ LEFT "and" RIGHT)
+   #'(bool->int (and (nonzero? LEFT) (nonzero? RIGHT)))])
+
+(define-macro-cases b-not-expr
+  [(_ VAL) #'VAL]
+  [(_ "not" VAL) #'(if (nonzero? VAL) 0 1)])
+
+(define b= (compose1 bool->int =))
+(define b< (compose1 bool->int <))
+(define b> (compose1 bool->int >))
+(define b<> (compose1 bool->int not =))
+
+(define-macro-cases b-comp-expr
+  [(_ VAL) #'VAL]
+  [(_ LEFT "=" RIGHT) #'(b= LEFT RIGHT)]
+  [(_ LEFT "<" RIGHT) #'(b< LEFT RIGHT)]
+  [(_ LEFT ">" RIGHT) #'(b> LEFT RIGHT)]
+  [(_ LEFT "<>" RIGHT) #'(b<> LEFT RIGHT)])
+
+(define-macro-cases b-if
+  [(_ COND-EXPR THEN-EXPR) #'(b-if COND-EXPR THEN-EXPR (void))]
+  [(_ COND-EXPR THEN-EXPR ELSE-EXPR)
+   #'(let ([result (if (nonzero? COND-EXPR)
+                       THEN-EXPR
+                       ELSE-EXPR)])
+       (when (exact-positive-integer? result)
+         (b-goto result)))])
 #+END_SRC
 
 #+BEGIN_SRC racket :tangle sample.rkt

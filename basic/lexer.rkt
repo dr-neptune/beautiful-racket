@@ -3,13 +3,18 @@
 
 (define-lex-abbrev digits (:+ (char-set "0123456789")))
 
+(define-lex-abbrev reserved-terms (:or "print" "goto" "end" "+" ":" ";" "let"
+                                       "=" "input" "-" "*" "/" "^" "mod" "(" ")"
+                                       "if" "then" "else" "<" ">" "<>" "and" "or" "not"))
+
 (define basic-lexer
   (lexer-srcloc
    ["\n" (token 'NEWLINE lexeme)]                       ; handle newlines
    [whitespace (token lexeme #:skip? #t)]               ; handle whitespace
    [(from/stop-before "rem" "\n") (token 'REM lexeme)]  ; handle comments "rem"
-   [(:or "print" "goto" "end" "+" ":" ";")              ; handle parsing operators
-    (token lexeme lexeme)]
+   [reserved-terms (token lexeme lexeme)]
+   [(:seq alphabetic (:* (:or alphabetic numeric "$")))
+    (token 'ID (string->symbol lexeme))]
    [digits (token 'INTEGER (string->number lexeme))]    ; handle a single digit
    [(:or (:seq (:? digits) "." digits)                  ; handle compound digit expressions
          (:seq digits "."))
