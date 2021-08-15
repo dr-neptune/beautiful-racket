@@ -1,9 +1,9 @@
 #lang basic
-10 if 2 < 4 then print "true" else print "false"
-20 if 2 > 4 then print "true" else print "false"
-30 if 2 > 4 then goto 50
-40 print "not"
-50 print "true"
-60 if 2 < 4 then 40 + 40 else 70
-70 print "not"
-80 print "true"
+30 rem print 'ignored'
+35
+50 print "never gets here"
+40 end
+60 print 'three' : print 1.0 + 3
+70 goto 11. + 18.5 + .5 rem ignored
+10 print "o" ; "n" ; "e"
+20 print : goto 60.0 : end
